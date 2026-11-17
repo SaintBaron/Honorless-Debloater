@@ -1116,7 +1116,7 @@ PRIVACY_TODOS = [
      "monkey -p com.android.vending -c android.intent.category.LAUNCHER 1",
      "settings get global upload_apk_enable"),
     ("wifiplus", "Turn off HONOR's Wi-Fi+",
-     "Wi-Fi > More settings > Wi-Fi+. It tests networks via outside servers (baidu.com).",
+     "Wi-Fi > More settings > Wi-Fi+. It tests networks via baidu.com and others.",
      "Open on the device", "am start -a android.settings.WIFI_SETTINGS", "settings get global hn_wifipro_enable"),
     ("adid", "Delete your advertising ID",
      "Privacy > Ads (or Google > Ads) > Delete advertising ID. Not checkable here.",
@@ -1131,6 +1131,23 @@ PRIVACY_TODOS = [
 CONNECTIVITY_OFF = "settings put global captive_portal_mode 0"
 CONNECTIVITY_ON = "settings delete global captive_portal_mode"
 CONNECTIVITY_GET = "settings get global captive_portal_mode"
+
+
+# Scanning for Wi-Fi networks and Bluetooth devices while Wi-Fi and Bluetooth are switched off (Settings > Location).
+# Apps and Google use it to work out where the device is.
+SCANNING_OFF = "settings put global wifi_scan_always_enabled 0; settings put global ble_scan_always_enabled 0"
+SCANNING_ON = "settings put global wifi_scan_always_enabled 1; settings put global ble_scan_always_enabled 1"
+SCANNING_GET = "settings get global wifi_scan_always_enabled; settings get global ble_scan_always_enabled"
+
+
+def scanning_off(output: str) -> Optional[bool]:
+    """True when both are off, False when either is on, None when the device didn't say."""
+    vals = [v.strip() for v in (output or "").split() if v.strip()]
+    if len(vals) != 2:
+        return None
+    if any(v == "1" for v in vals):
+        return False
+    return True if all(v == "0" for v in vals) else None
 
 
 def connectivity_check_off(output: str) -> Optional[bool]:
@@ -1680,6 +1697,11 @@ def main() -> None:
             def done(rel, err):
                 if err or not rel or version_tuple(rel.version_name) <= version_tuple(tool_version):
                     return
+                # The app is published first and the tools are added a few minutes later (and a tool whose build
+                # failed is left out), so only offer a release that really has this computer's tool and its checksum.
+                if TOOL_ASSETS.get(platform_key()) not in rel.assets or SUMS_ASSET not in rel.assets:
+                    self.log(f"Version {rel.version_name} is out, but its setup tool for this computer isn't published yet")
+                    return
                 box = self.update_box
                 row = ttk.Frame(box)
                 row.pack(anchor="w", fill="x", pady=(0, 10))
@@ -2046,6 +2068,12 @@ def main() -> None:
                 if not rel.apk_url:
                     self.set_status(st, f"The newest release ({rel.tag}) has no {APK_ASSET} file.", "bad")
                     return
+                try:   # only ever from this project's own release, like the tool's own updates
+                    rel.apk_url = release_asset_url(repo, rel, APK_ASSET)
+                except ValueError as e:
+                    self.log(f"Refused the app's download link: {e}")
+                    self.set_status(st, f"The newest release ({rel.tag}) doesn't look right: {e}.", "bad")
+                    return
                 if (self.installed_code is not None and rel.version_code is not None
                         and self.installed_code >= rel.version_code):
                     self.set_status(st, f"✓ The newest version ({rel.version_name}) is already installed.", "good")
@@ -2332,8 +2360,7 @@ def main() -> None:
 
         # --------------------------------------------------------------- finish
         def step_privacy(self) -> None:
-            self.para("Settings Android doesn't let apps change. Each button opens the right screen on the device. "
-                      "All optional; the app shows the same list until they're done.")
+            self.para("Optional. Each button opens the right screen; the app shows the same list.")
             top = ttk.Frame(self.body)
             top.pack(anchor="w", fill="x", pady=(0, 4))
             check_btn = ttk.Button(top, text="Check again")
@@ -2343,7 +2370,7 @@ def main() -> None:
             rows = []
             for todo_id, title, why, button, open_cmd, check_cmd in PRIVACY_TODOS:
                 box = ttk.Frame(self.body)
-                box.pack(anchor="w", fill="x", pady=(4, 0))
+                box.pack(anchor="w", fill="x", pady=(1, 0))
                 head = ttk.Frame(box)
                 head.pack(anchor="w", fill="x")
                 mark = ttk.Label(head, text="…", style="Muted.TLabel", width=8)
@@ -2371,7 +2398,7 @@ def main() -> None:
                     res = [(todo_id, privacy_todo_done(todo_id, self.adb.shell(check_cmd, quiet=True)[1]
                                                        if check_cmd else None), mark)
                            for todo_id, check_cmd, mark in rows]
-                    return res, connectivity_check_off(self.adb.shell(CONNECTIVITY_GET, quiet=True)[1])
+                    return res, [parse(self.adb.shell(get, quiet=True)[1]) for _m, get, parse in switches]
 
                 def done(both, err):
                     if mine != latest[0]:
@@ -2379,12 +2406,13 @@ def main() -> None:
                     if err:
                         self.set_status(summary, f"Couldn't check: {err}", "warn")
                         return
-                    results, conn_off = both
-                    try:
-                        conn_mark.configure(text={True: "Off", False: "On", None: "?"}[conn_off],
-                                            style="Good.TLabel" if conn_off else "Muted.TLabel")
-                    except tk.TclError:
-                        pass
+                    results, offs = both
+                    for (sw_mark, _g, _p), is_off in zip(switches, offs):
+                        try:
+                            sw_mark.configure(text={True: "Off", False: "On", None: "?"}[is_off],
+                                              style="Good.TLabel" if is_off else "Muted.TLabel")
+                        except tk.TclError:
+                            pass
                     left = 0
                     for todo_id, ok, mark in results:
                         text, style = {True: ("✓ Done", "Good.TLabel"), False: ("To do", "Warn.TLabel"),
@@ -2397,27 +2425,33 @@ def main() -> None:
                     self.set_status(summary, "✓ All the ones that can be checked are done." if left == 0 else
                                     f"{left} left. You can carry on and do them later.", "good" if left == 0 else "")
                 self.background(work, done)
-            # The connectivity check: a choice, written over USB (the app can't change it).
-            box = ttk.Frame(self.body)
-            box.pack(anchor="w", fill="x", pady=(4, 0))
-            head = ttk.Frame(box)
-            head.pack(anchor="w", fill="x")
-            conn_mark = ttk.Label(head, text="…", style="Muted.TLabel", width=8)
-            conn_mark.pack(side="left")
-            ttk.Label(head, text="Android's connectivity check", font=self.f_head).pack(side="left")
-            if self.adb and self.adb.serial:
-                def set_conn(cmd: str):
-                    self.log(f"$ adb shell {cmd}")
-                    self.background(lambda: self.adb.shell(cmd), lambda r, e: check())
-                ttk.Button(head, text="Turn on", style="Quiet.TButton",
-                           command=lambda: set_conn(CONNECTIVITY_ON)).pack(side="right")
-                ttk.Button(head, text="Turn off", style="Quiet.TButton",
-                           command=lambda: set_conn(CONNECTIVITY_OFF)).pack(side="right", padx=(0, 4))
-            lbl = ttk.Label(box, text="It tests every network via Google, even with a VPN. Off: Wi-Fi sign-in pages "
-                                      "won't pop up.",
-                            style="Muted.TLabel", justify="left")
-            lbl.pack(anchor="w", padx=(64, 0))
-            self.wrap(lbl, 70)
+            # Choices written over USB (the app can't change them): title, why, off, on, read, parse.
+            switches = []
+            for title, why, off_cmd, on_cmd, get_cmd, parse in (
+                ("Android's connectivity check", "Tests every network via Google. Off: Wi-Fi sign-in pages won't "
+                 "pop up.", CONNECTIVITY_OFF, CONNECTIVITY_ON, CONNECTIVITY_GET, connectivity_check_off),
+                ("Wi-Fi and Bluetooth scanning", "Finds nearby networks and devices to place you, even with both "
+                 "off.", SCANNING_OFF, SCANNING_ON, SCANNING_GET, scanning_off),
+            ):
+                box = ttk.Frame(self.body)
+                box.pack(anchor="w", fill="x", pady=(1, 0))
+                head = ttk.Frame(box)
+                head.pack(anchor="w", fill="x")
+                sw_mark = ttk.Label(head, text="…", style="Muted.TLabel", width=8)
+                sw_mark.pack(side="left")
+                ttk.Label(head, text=title, font=self.f_head).pack(side="left")
+                if self.adb and self.adb.serial:
+                    def set_switch(cmd: str):
+                        self.log(f"$ adb shell {cmd}")
+                        self.background(lambda: self.adb.shell(cmd), lambda r, e: check())
+                    ttk.Button(head, text="Turn on", style="Quiet.TButton",
+                               command=lambda c=on_cmd: set_switch(c)).pack(side="right")
+                    ttk.Button(head, text="Turn off", style="Quiet.TButton",
+                               command=lambda c=off_cmd: set_switch(c)).pack(side="right", padx=(0, 4))
+                lbl = ttk.Label(box, text=why, style="Muted.TLabel", justify="left")
+                lbl.pack(anchor="w", padx=(64, 0))
+                self.wrap(lbl, 70)
+                switches.append((sw_mark, get_cmd, parse))
 
             check_btn.configure(command=check)
             check()

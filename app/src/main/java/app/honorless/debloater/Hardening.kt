@@ -31,7 +31,8 @@ class Hardening(
         Triple(Store.S_NO_AI_CAPTURE, true, listOf(UserManager.DISALLOW_CONTENT_CAPTURE, UserManager.DISALLOW_CONTENT_SUGGESTIONS)),
         Triple(Store.S_NO_NEW_USERS, true, listOf(UserManager.DISALLOW_ADD_USER)),
         Triple(Store.S_NO_DEBUGGING, false, listOf(UserManager.DISALLOW_DEBUGGING_FEATURES)),
-    )
+        Triple(Store.S_NO_USER_CERTS, false, listOf(UserManager.DISALLOW_CONFIG_CREDENTIALS)),
+    ) + if (block2gSupported()) listOf(Triple(Store.S_NO_2G, false, listOf(DISALLOW_CELLULAR_2G))) else emptyList()
 
     fun on(key: String): Boolean = store.setting(key, if (DEFAULT_ON.contains(key)) "on" else "off") == "on"
 
@@ -71,6 +72,7 @@ class Hardening(
                 }
             }
         }
+        step("Chrome privacy settings") { applyChrome() }
         step("keyboards and accessibility apps") { applyInputApproval() }
         step("Private DNS") { applyDns() }
         step("always-on VPN") { applyVpn() }
@@ -96,6 +98,10 @@ class Hardening(
         }
         if (on(Store.S_NO_SMART_LOCK)) check("Turn off Smart Lock") { dpm.getKeyguardDisabledFeatures(admin) and NO_TRUST != 0 }
         if (on(Store.S_USB_CHARGE_ONLY) && usbDataSupported()) check("USB set to charging only") { !dpm.isUsbDataSignalingEnabled }
+        if (on(Store.S_CHROME_PRIVACY) && chromeInstalled()) check("Chrome privacy settings") {
+            val r = dpm.getApplicationRestrictions(admin, CHROME)
+            CHROME_POLICIES.all { r.containsKey(it) && !r.getBoolean(it, true) }
+        }
         if (on(Store.S_APPROVE_INPUT)) {
             check("keyboards limited to approved ones") { dpm.getPermittedInputMethods(admin) != null }
             check("accessibility apps limited to approved ones") { dpm.getPermittedAccessibilityServices(admin) != null }
@@ -119,6 +125,53 @@ class Hardening(
         } catch (e: Exception) {
             store.log("couldn't apply $name: ${e.message}")
         }
+    }
+
+    // --------------------------------------------------------- Chrome
+
+    @Suppress("DEPRECATION")
+    fun chromeInstalled(): Boolean = try {
+        pm.getApplicationInfo(CHROME, 0); true
+    } catch (e: Exception) {
+        false
+    }
+
+    /**
+     * Chrome reads settings handed to it by the device's owner (its "managed configuration"). This switches off its
+     * usage and crash reports, sending visited addresses to Google, and the ad features that profile browsing
+     * (ad topics, site-suggested ads, ad measurement). Chrome then says it's "managed by your organisation".
+     * Anything else already set for Chrome is left alone.
+     */
+    private fun applyChrome() {
+        val want = on(Store.S_CHROME_PRIVACY)
+        val applied = store.setting(Store.S_CHROME_APPLIED, "") == "yes"
+        if (!want && !applied) return
+        val current = dpm.getApplicationRestrictions(admin, CHROME)
+        if (want) {
+            if (!chromeInstalled()) return
+            if (CHROME_POLICIES.all { current.containsKey(it) && !current.getBoolean(it, true) }) return
+            val next = android.os.Bundle(current)
+            for (k in CHROME_POLICIES) next.putBoolean(k, false)
+            dpm.setApplicationRestrictions(admin, CHROME, next)
+            store.setSetting(Store.S_CHROME_APPLIED, "yes")
+            store.log("Chrome: usage reports and ad profiling switched off")
+        } else {
+            val next = android.os.Bundle(current)
+            for (k in CHROME_POLICIES) next.remove(k)
+            dpm.setApplicationRestrictions(admin, CHROME, next)
+            store.setSetting(Store.S_CHROME_APPLIED, "")
+            store.log("Chrome: back to its own settings")
+        }
+    }
+
+    /** Blocking 2G needs Android 14 and a device with mobile service. */
+    fun block2gSupported(): Boolean = Build.VERSION.SDK_INT >= 34 && Catalogue.hasMobileService(ctx)
+
+    /** Certificates someone has added to the device's trusted list (they let whoever made them read encrypted traffic). */
+    fun userCertificates(): Int? = try {
+        dpm.getInstalledCaCerts(admin).size
+    } catch (e: Exception) {
+        null
     }
 
     // --------------------------------------------------------- keyboards & a11y
@@ -237,23 +290,38 @@ class Hardening(
         false
     }
 
-    /** Undo everything (used when the debloater is removed). */
+    /** Undo everything (used when the debloater is removed). Each part on its own, so one failing doesn't skip the rest. */
     fun releaseAll() {
-        step("release") {
-            for ((_, _, restrictions) in restrictionSettings) restrictions.forEach { dpm.clearUserRestriction(admin, it) }
-            dpm.clearUserRestriction(admin, UserManager.DISALLOW_CONFIG_PRIVATE_DNS)
-            dpm.setBackupServiceEnabled(admin, true)
-            dpm.setKeyguardDisabledFeatures(admin, DevicePolicyManager.KEYGUARD_DISABLE_FEATURES_NONE)
-            if (usbDataSupported() && !dpm.isUsbDataSignalingEnabled) dpm.setUsbDataSignalingEnabled(true)
-            dpm.setPermittedInputMethods(admin, null)
-            dpm.setPermittedAccessibilityServices(admin, null)
+        for ((_, _, restrictions) in restrictionSettings) for (r in restrictions) {
+            step("release $r") { dpm.clearUserRestriction(admin, r) }
+        }
+        step("release Private DNS lock") { dpm.clearUserRestriction(admin, UserManager.DISALLOW_CONFIG_PRIVATE_DNS) }
+        step("release backup") { dpm.setBackupServiceEnabled(admin, true) }
+        step("release lock screen") { dpm.setKeyguardDisabledFeatures(admin, DevicePolicyManager.KEYGUARD_DISABLE_FEATURES_NONE) }
+        step("release USB data") { if (usbDataSupported() && !dpm.isUsbDataSignalingEnabled) dpm.setUsbDataSignalingEnabled(true) }
+        step("release keyboards") { dpm.setPermittedInputMethods(admin, null) }
+        step("release accessibility apps") { dpm.setPermittedAccessibilityServices(admin, null) }
+        step("release Private DNS") {
             if (store.setting(Store.S_DNS_APPLIED, "") == "yes") dpm.setGlobalPrivateDnsModeOpportunistic(admin)
+        }
+        step("release VPN") {
             if (store.setting(Store.S_VPN_APPLIED, "") == "yes") dpm.setAlwaysOnVpnPackage(admin, null, false)
-            val home = store.setting(Store.S_HOME, "")
-            if (home.isNotEmpty()) dpm.clearPackagePersistentPreferredActivities(admin, home)
-            store.setSetting(Store.S_DNS_APPLIED, "")
-            store.setSetting(Store.S_VPN_APPLIED, "")
-            store.setSetting(Store.S_HOME, "")
+        }
+        step("release Chrome") {
+            if (store.setting(Store.S_CHROME_APPLIED, "") == "yes") {
+                val next = android.os.Bundle(dpm.getApplicationRestrictions(admin, CHROME))
+                for (k in CHROME_POLICIES) next.remove(k)
+                dpm.setApplicationRestrictions(admin, CHROME, next)
+            }
+        }
+        val home = store.setting(Store.S_HOME, "")
+        if (home.isNotEmpty()) {
+            step("release home screen") { dpm.clearPackagePersistentPreferredActivities(admin, home) }
+            // Android keeps an uninstall block after the owner is gone, so lift it now.
+            step("release uninstall block") { dpm.setUninstallBlocked(admin, home, false) }
+        }
+        for (k in listOf(Store.S_DNS_APPLIED, Store.S_VPN_APPLIED, Store.S_CHROME_APPLIED, Store.S_HOME)) {
+            step("release record") { store.setSetting(k, "") }
         }
     }
 
@@ -263,6 +331,17 @@ class Hardening(
             Store.S_NO_SMART_LOCK)
         private const val REDACT = DevicePolicyManager.KEYGUARD_DISABLE_UNREDACTED_NOTIFICATIONS
         private const val NO_TRUST = DevicePolicyManager.KEYGUARD_DISABLE_TRUST_AGENTS
+
+        /** UserManager.DISALLOW_CELLULAR_2G (Android 14). */
+        const val DISALLOW_CELLULAR_2G = "no_cellular_2g"
+
+        const val CHROME = "com.android.chrome"
+        /** Chrome policies, all set to false. The prompt one has to be off for the three ad ones to apply. */
+        val CHROME_POLICIES = listOf(
+            "MetricsReportingEnabled", "UrlKeyedAnonymizedDataCollectionEnabled",
+            "PrivacySandboxPromptEnabled", "PrivacySandboxAdTopicsEnabled",
+            "PrivacySandboxSiteEnabledAdsEnabled", "PrivacySandboxAdMeasurementEnabled",
+        )
 
         /** Tracker-blocking (or malware-blocking) resolvers that work with Android's Private DNS. */
         val DNS_PROVIDERS = linkedMapOf(

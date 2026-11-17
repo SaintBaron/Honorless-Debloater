@@ -609,9 +609,9 @@ def parse_resolved_component(text: str) -> Optional[str]:
 # device owners change these).
 KNOWN_SETTINGS = [
     ("global", "wifi_scan_always_enabled", "0", "Wi-Fi scanning for location, even with Wi-Fi off",
-     "Settings > Location > Wi-Fi scanning"),
+     "Settings > Location > Wi-Fi scanning (or the setup tool's Privacy settings step)"),
     ("global", "ble_scan_always_enabled", "0", "Bluetooth scanning for location, even with Bluetooth off",
-     "Settings > Location > Bluetooth scanning"),
+     "Settings > Location > Bluetooth scanning (or the setup tool's Privacy settings step)"),
     ("global", "network_recommendations_enabled", "0", "Sends Wi-Fi network details to a rating service",
      "Settings > Wi-Fi > Wi-Fi preferences"),
     ("global", "wifi_wakeup_enabled", "0", "Turns Wi-Fi back on by itself near saved networks",

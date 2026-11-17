@@ -221,6 +221,13 @@ class Installer(
         }
     }
 
+    /** Run after this app has been replaced by a newer copy: say so where the last check is shown. */
+    fun noteUpdated() {
+        if (store.setting(Store.S_SELF_RESULT, "").startsWith("Updating to")) {
+            store.setSetting(Store.S_SELF_RESULT, "Updated to ${installedVersionName(ctx.packageName) ?: "the newest version"}")
+        }
+    }
+
     /** After Android reports an install failed: clear the remembered release so the next check tries it again,
      *  unless the failure was about the app itself (wrong key, wrong app), which retrying won't fix. */
     fun installFailed(pkg: String, status: Int) {
@@ -326,10 +333,10 @@ class Installer(
         private val SIGNER_RE = Regex("^[0-9a-f]{64}$")
         private val SELF_TAG = Regex("^v1\\.0\\.[0-9]{1,9}$")
 
-        /** The app's own release: tag v1.0.N, and the APK file inside that release of this repository. */
         /** v1.0.N -> N (this app's version code), or null for anything else. */
         fun tagBuild(tag: String): Long? = Regex("v1\\.0\\.([0-9]{1,9})").matchEntire(tag)?.groupValues?.get(1)?.toLongOrNull()
 
+        /** The app's own release: tag v1.0.N, and the APK file inside that release of this repository. */
         fun selfCandidate(js: Map<*, *>, repo: String): Candidate {
             val tag = js["tag_name"] as? String ?: throw Net.NetError("GitHub didn't say which version is newest")
             if (!SELF_TAG.matches(tag) || js["draft"] == true) throw Net.NetError("unexpected release name \"$tag\"")

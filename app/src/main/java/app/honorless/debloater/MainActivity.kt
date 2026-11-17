@@ -61,6 +61,8 @@ class MainActivity : Activity() {
         val bootMissed: Boolean,                  // restarted since the start-up check last ran
         val todos: List<Todo>,                    // settings only the user can change
         val usbDataSupported: Boolean,            // the device can switch USB to charging only
+        val chromeInstalled: Boolean,
+        val block2gSupported: Boolean,            // Android 14+ with mobile service
     ) {
         fun setting(key: String, default: String) = settings[key] ?: default
         fun on(key: String) = setting(key, if (key in Hardening.DEFAULT_ON) "on" else "off") == "on"
@@ -76,8 +78,10 @@ class MainActivity : Activity() {
      * One setting only the user can change. [detected]: true = it's done, false = it isn't, null = the app can't
      * tell (then the user marks it done).
      */
-    class Todo(val id: String, val detected: Boolean?, val marked: Boolean) {
+    class Todo(val id: String, val detected: Boolean?, val marked: Boolean, val skipped: Boolean = false) {
         val done get() = detected ?: marked
+        /** Nothing more to ask: it's done, or the user chose to leave it as it is. */
+        val settled get() = done || skipped
     }
 
     private class RowRef(val view: View, val divider: View, val haystack: String)
@@ -161,6 +165,7 @@ class MainActivity : Activity() {
         val installer = enforcer.installer()
         val settingKeys = listOf(Store.S_BACKUP_OFF, Store.S_NO_AI_CAPTURE, Store.S_NO_NEW_USERS, Store.S_APPROVE_INPUT,
             Store.S_REDACT_LOCKSCREEN, Store.S_NO_DEBUGGING, Store.S_NO_SMART_LOCK, Store.S_USB_CHARGE_ONLY,
+            Store.S_NO_USER_CERTS, Store.S_NO_2G, Store.S_CHROME_PRIVACY,
             Store.S_DNS, Store.S_VPN, Store.S_LAWNCHAIR_AUTO, Store.S_HOME,
             Store.S_SELF_AUTO, Store.S_HELI_AUTO, Store.S_REPLACE_OFFER, Store.S_SELF_CHECKED, Store.S_SELF_RESULT)
         @Suppress("DEPRECATION")
@@ -194,6 +199,8 @@ class MainActivity : Activity() {
             bootMissed = android.os.SystemClock.elapsedRealtime() > 4 * 60_000L && enforcer.bootCheckMissed(),
             todos = todos(),
             usbDataSupported = hardening.usbDataSupported(),
+            chromeInstalled = hardening.chromeInstalled(),
+            block2gSupported = hardening.block2gSupported(),
         )
     }
 
@@ -283,7 +290,7 @@ class MainActivity : Activity() {
         (search.parent as? LinearLayout)?.removeView(search)
 
         content.addView(statusCard(m), ui.lp(bottom = 12))
-        if (m.owner && m.todos.any { !it.done }) content.addView(todoCard(m), ui.lp(bottom = 12))
+        if (m.owner && m.todos.any { !it.settled }) content.addView(todoCard(m), ui.lp(bottom = 12))
         if (m.owner && m.setting(Store.S_REPLACE_OFFER, "") == "") content.addView(replaceCard(), ui.lp(bottom = 12))
         if (m.news.isNotEmpty()) content.addView(newsCard(m), ui.lp(bottom = 12))
 
@@ -614,6 +621,13 @@ class MainActivity : Activity() {
 
     private fun todos(): List<Todo> {
         fun marked(id: String) = store.setting("todo_$id", "") == "done"
+        fun skipped(id: String) = store.setting("todo_$id", "") == "skip"
+        fun off(key: String) = globalSetting(key)?.let { it == "0" }
+        // Scanning for Wi-Fi and Bluetooth with them switched off: done only when both are off.
+        val scanning = listOf(off("wifi_scan_always_enabled"), off("ble_scan_always_enabled")).let { s ->
+            if (s.any { it == false }) false else if (s.all { it == true }) true else null
+        }
+        val certs = if (enforcer.isOwner()) enforcer.hardening().userCertificates() else null
         val keyguard = getSystemService(android.app.KeyguardManager::class.java)
         val boot = store.setting(Store.S_BOOT_RESULT, "")
         val adb = try { android.provider.Settings.Global.getInt(contentResolver, android.provider.Settings.Global.ADB_ENABLED, 0) } catch (e: Exception) { -1 }
@@ -627,8 +641,11 @@ class MainActivity : Activity() {
             Todo("playprotect", globalSetting("upload_apk_enable")?.let { it == "0" }, marked("playprotect")),
             Todo("wifiplus", globalSetting("hn_wifipro_enable")?.let { it == "false" || it == "0" }, marked("wifiplus")),
             Todo("adid", null, marked("adid")),
+            Todo("diagnostics", null, marked("diagnostics")),
+            Todo("scanning", scanning, marked("scanning")),
+            Todo("certs", certs?.let { it == 0 }, marked("certs")),
             Todo("usbdebug", if (adb < 0) null else adb == 0, marked("usbdebug")),
-        )
+        ).map { Todo(it.id, it.detected, it.marked, skipped(it.id)) }
     }
 
     /** What each item says and which screen its button opens. */
@@ -648,6 +665,17 @@ class MainActivity : Activity() {
         "adid" -> Triple("Delete your advertising ID",
             "Settings > Privacy > Ads (on some devices Settings > Google > Ads) > Delete advertising ID. Apps and ad " +
                 "networks then get zeros instead of an ID that follows you between apps.", "Open ad settings")
+        "diagnostics" -> Triple("Turn off Google's Usage & diagnostics",
+            "Settings > Google > the ⋮ menu (or All services) > Usage & diagnostics. It sends Google how you use the " +
+                "device, which apps you open and battery details.", "Open Google settings")
+        "scanning" -> Triple("Turn off Wi-Fi and Bluetooth scanning",
+            "Settings > Location > Wi-Fi scanning and Bluetooth scanning (on some devices under Location services). " +
+                "They let apps and Google look for nearby networks and devices to work out where you are, even with " +
+                "Wi-Fi and Bluetooth switched off. The setup tool can switch both off for you.", "Open location settings")
+        "certs" -> Triple("Check the certificates someone added",
+            "This device trusts a certificate that didn't come with it. Whoever made it can read encrypted traffic. " +
+                "If you didn't add it for work, school or an ad blocker, remove it: Settings > Security > More " +
+                "settings > Encryption and credentials > Trusted credentials > User.", "Open security settings")
         "wifiplus" -> Triple("Turn off HONOR's Wi-Fi+",
             "Settings > Wi-Fi > More settings (or the ⋮ menu) > Wi-Fi+. It tests your connection by contacting outside " +
                 "servers, including baidu.com, and switches networks by itself.", "Open Wi-Fi settings")
@@ -666,6 +694,11 @@ class MainActivity : Activity() {
                 "com.google.android.gms.security.settings.VerifyAppsSettingsActivity"),
                 packageManager.getLaunchIntentForPackage("com.android.vending"))
             "wifiplus" -> listOf(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+            "diagnostics" -> listOf(Intent().setClassName("com.google.android.gms", "com.google.android.gms.app.settings.GoogleSettingsLink"),
+                Intent(android.provider.Settings.ACTION_SETTINGS))
+            "scanning" -> listOf(Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            "certs" -> listOf(Intent("com.android.settings.TRUSTED_CREDENTIALS_USER"),
+                Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS))
             "adid" -> listOf(Intent("com.google.android.gms.settings.ADS_PRIVACY"),
                 Intent(android.provider.Settings.ACTION_PRIVACY_SETTINGS), Intent(android.provider.Settings.ACTION_SETTINGS))
             else -> listOf(Intent(android.provider.Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
@@ -685,7 +718,7 @@ class MainActivity : Activity() {
     private fun todoCard(m: Model): View {
         val pal = ui.pal
         val card = ui.card()
-        val left = m.todos.count { !it.done }
+        val left = m.todos.count { !it.settled }
         card.addView(ui.text("Finish setting up", 16f, bold = true))
         card.addView(ui.muted("${plural(left, "setting", "settings")} only you can change: Android doesn't let apps change " +
             "these. Each button opens the right screen. Ones the app can check tick themselves when you come back."),
@@ -695,9 +728,10 @@ class MainActivity : Activity() {
             card.addView(ui.divider(), ui.lp(top = 6))
             val head = ui.horizontal()
             head.addView(ui.text(title, 15f, bold = true), ui.lp(0, weight = 1f))
-            head.addView(ui.pill(if (t.done) "Done" else "To do", if (t.done) pal.good else pal.warn))
+            head.addView(ui.pill(if (t.done) "Done" else if (t.skipped) "Skipped" else "To do",
+                if (t.done) pal.good else if (t.skipped) pal.muted else pal.warn))
             card.addView(head, ui.lp(top = 8))
-            if (t.done) continue
+            if (t.settled) continue
             card.addView(ui.muted(why), ui.lp(top = 2))
             val row = ui.horizontal()
             row.addView(ui.button(button, Ui.Kind.SECONDARY) { openTodo(t.id) })
@@ -707,6 +741,10 @@ class MainActivity : Activity() {
                     run({ store.setSetting("todo_${t.id}", "done"); "Marked as done." })
                 })
             }
+            // Your device, your call: anything here can be left as it is.
+            row.addView(ui.button("Skip", Ui.Kind.TEXT) {
+                run({ store.setSetting("todo_${t.id}", "skip"); "Skipped. Bring it back from Advanced." })
+            })
             card.addView(row, ui.lp(top = 6))
         }
         return card
@@ -874,7 +912,12 @@ class MainActivity : Activity() {
             Triple(Store.S_REDACT_LOCKSCREEN, "Hide notification text on the lock screen", "Shows that something arrived, not what it says, until you unlock. Needs a PIN, pattern or password."),
             Triple(Store.S_NO_DEBUGGING, "Block USB debugging", "Turns adb off and stops it being turned on. Switch this off before updating with the setup tool or running the scan script."),
             Triple(Store.S_NO_SMART_LOCK, "Turn off Smart Lock", "Stops the device staying unlocked by itself (at trusted places, near trusted devices, or while carried). Only matters once you have a screen lock."),
-        )
+            Triple(Store.S_NO_USER_CERTS, "Block adding trusted certificates", "A certificate added to the device's trusted list lets whoever made it read encrypted traffic. This stops any being added (and locks Settings > Security > Encryption and credentials). Leave it off if your work, school or an ad blocker needs one."),
+        ) + (if (m.chromeInstalled) listOf(
+            Triple(Store.S_CHROME_PRIVACY, "Quieten Chrome", "Switches off Chrome's usage and crash reports, sending the addresses you visit to Google, and its ad features (ad topics, site-suggested ads, ad measurement). Chrome will say it's \"managed by your organisation\": that's this app."),
+        ) else emptyList()) + (if (m.block2gSupported) listOf(
+            Triple(Store.S_NO_2G, "Block 2G", "2G has no protection against fake phone masts, which are used to intercept calls and texts. Emergency calls still work. Leave it off if you rely on 2G where you live."),
+        ) else emptyList())
         for ((key, title, about) in toggles) {
             body.addView(ui.divider(), ui.lp(top = 8))
             body.addView(onOffRow(title, about, key, m.on(key)), ui.lp(top = 8))
@@ -952,9 +995,9 @@ class MainActivity : Activity() {
             body.addView(r, ui.lp(top = 6))
         }
 
-        val count = listOf(Store.S_BACKUP_OFF, Store.S_NO_AI_CAPTURE, Store.S_NO_NEW_USERS, Store.S_APPROVE_INPUT,
-            Store.S_REDACT_LOCKSCREEN, Store.S_NO_DEBUGGING, Store.S_NO_SMART_LOCK, Store.S_USB_CHARGE_ONLY).count { m.on(it) } + (if (dns != "off") 1 else 0) + (if (vpn.isNotEmpty()) 1 else 0)
-        return section("privacy", "Privacy and security", "$count of 8 on", null, emptyList(), extra = body)
+        val shown = toggles.map { it.first } + (if (m.usbDataSupported) listOf(Store.S_USB_CHARGE_ONLY) else emptyList())
+        val count = shown.count { m.on(it) } + (if (dns != "off") 1 else 0) + (if (vpn.isNotEmpty()) 1 else 0)
+        return section("privacy", "Privacy and security", "$count of ${shown.size + 2} on", null, emptyList(), extra = body)
     }
 
     /** A setting with an Off / On choice. */
@@ -1107,10 +1150,10 @@ class MainActivity : Activity() {
             guarded { run({ "Added ${plural(enforcer.snapshot(), "app", "apps")} to the list." }) }
         }, ui.lp(WRAP))
 
-        if (m.todos.any { it.detected == null && it.marked }) {
+        if (m.todos.any { (it.detected == null && it.marked) || it.skipped }) {
             body.addView(ui.divider(), ui.lp(top = 12))
             body.addView(ui.text("Setup checklist", 15f, bold = true), ui.lp(top = 12))
-            body.addView(ui.muted("Bring back the items you marked as done in Finish setting up.", 12f), ui.lp(top = 2, bottom = 6))
+            body.addView(ui.muted("Bring back the items you marked as done or skipped in Finish setting up.", 12f), ui.lp(top = 2, bottom = 6))
             body.addView(ui.button("Show the checklist again", Ui.Kind.SECONDARY) {
                 run({ for (t in m.todos) store.setSetting("todo_${t.id}", ""); "The checklist is back at the top." })
             }, ui.lp(WRAP))

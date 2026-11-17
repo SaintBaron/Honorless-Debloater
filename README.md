@@ -197,7 +197,7 @@ something goes wrong. **Show details** at the bottom shows exactly what it's doi
 | 6. Install the app | Installs it, or updates the copy that's already there. **Watch the tablet**: HONOR asks you to confirm apps installed over USB. |
 | 7. Remove accounts | Shows which accounts are still signed in (only their type, such as "Google account", never the address) and updates by itself as you remove them. Skipped if the app is already set up. |
 | 8. Make it device owner | Runs the one command that gives the app its powers. Skipped if it's already set up. |
-| 9. Privacy settings | Settings only you can change, because Android doesn't let apps change them: set a **screen lock**; turn off Play Protect's **Improve harmful app detection** (it uploads copies of apps that didn't come from the Play Store to Google); turn off HONOR's **Wi-Fi+** (it tests connections by contacting outside servers, including baidu.com); **delete your advertising ID**. Each has a button that opens the right screen on the tablet, and the tool checks what it can over USB and ticks them off. It can also turn **Android's connectivity check** off (see below). Optional: Next is never blocked. |
+| 9. Privacy settings | Settings only you can change, because Android doesn't let apps change them: set a **screen lock**; turn off Play Protect's **Improve harmful app detection** (it uploads copies of apps that didn't come from the Play Store to Google); turn off HONOR's **Wi-Fi+** (it tests connections by contacting outside servers, including baidu.com); **delete your advertising ID**. Each has a button that opens the right screen on the tablet, and the tool checks what it can over USB and ticks them off. It can also turn **Android's connectivity check** and **Wi-Fi and Bluetooth scanning** off (see below). Optional: Next is never blocked. |
 | 10. Finish on the tablet | Sign back in; open the app and check it says **Protection is on**; allow it in HONOR's battery settings. Each has a button that opens the right screen on the tablet. |
 
 That's it. The app now looks after itself. Last of all, turn USB debugging off again (or switch on **Block USB
@@ -307,8 +307,13 @@ See [Installing apps safely](#installing-apps-safely) for what's checked before 
 Until they're done, a card at the top lists the settings only you can change, each with a button that opens the right
 screen: a **screen lock**; letting the app **start when the tablet does** (HONOR's App launch screen); Play Protect's
 **Improve harmful app detection** off; HONOR's **Wi-Fi+** off; your **advertising ID** deleted (Settings > Privacy > Ads,
-or Settings > Google > Ads); and **USB debugging** off once you're done with the computer. The ones the app can check (screen lock, USB debugging, start-up) tick themselves; for the others, Android
-doesn't let it look, so tap **Mark as done**. **Advanced > Show the checklist again** brings back the ones you marked.
+or Settings > Google > Ads); Google's **Usage & diagnostics** off; **Wi-Fi and Bluetooth scanning** off (Settings >
+Location); and **USB debugging** off once you're done with the computer. It also tells you if the device **trusts a
+certificate someone added** (whoever made it can read encrypted traffic), so you can remove it if it isn't yours.
+
+The ones the app can check (screen lock, scanning, certificates, USB debugging, start-up) tick themselves; for the
+others, Android doesn't let it look, so tap **Mark as done**. Every item also has **Skip**, for anything you'd rather
+leave as it is. **Advanced > Show the checklist again** brings back the ones you marked or skipped.
 
 ### Privacy and security settings
 
@@ -323,11 +328,15 @@ Each is an **Off / On** choice in the **Privacy and security** card. Five are on
 | Hide notification text on the lock screen | Off | Shows that something arrived, not what it says, until you unlock. Needs a PIN, pattern or password. |
 | Block USB debugging | Off | Turns adb off and stops it being turned on. Switch it off again before running the setup tool or the scan script. |
 | Turn off Smart Lock | **On** | Stops the tablet staying unlocked by itself at trusted places, near trusted devices or while carried. Only matters once you have a screen lock. |
+| Block adding trusted certificates | Off | Stops certificates being added to the device's trusted list (one lets whoever made it read encrypted traffic), and locks Settings > Security > Encryption and credentials. Leave it off if your work, school or an ad blocker needs one. |
+| Quieten Chrome | Off | Only shown if Chrome is installed. Hands Chrome settings that switch off its usage and crash reports, sending the addresses you visit to Google, and its ad features (ad topics, site-suggested ads, ad measurement). Chrome then says it's "managed by your organisation": that's this app. Other browsers aren't affected. |
+| Block 2G | Off | Only on phones and SIM tablets with Android 14 or newer. 2G has no protection against fake phone masts. Emergency calls still work. Leave it off if you rely on 2G where you live. |
 | USB for charging only | Off | Blocks all data over the USB port, so a computer, public charger or cable can't reach the tablet; also stops file transfer, the setup tool and the scan script. Only shown if the tablet's hardware supports it (Android 12 needs HONOR's support for this). |
 | Tracker-blocking Private DNS | Off | Off, **AdGuard** (`dns.adguard-dns.com`: ads, trackers and malware), **Quad9** (`dns.quad9.net`: malware only) or your own resolver. DNS lookups are encrypted and known tracking domains, HONOR's included, don't resolve. The setting is locked so nothing else can change it. If the service is ever down, websites won't load until you switch this off. |
 | Lock a VPN or firewall always on | Off | Pick an installed VPN or firewall app (for example RethinkDNS from F-Droid). It's kept running, and nothing can go online outside it, so its per-app blocking can't be bypassed. If that app stops working, nothing gets online until you release it in the card. |
 
-**Release device owner** turns all of these back off.
+**Release device owner** turns all of these back off. Each one is undone separately, so one that fails can't stop
+the rest, and every app that's hidden on the device is brought back, whether or not the app has a record of hiding it.
 
 ### Android's connectivity check
 
@@ -337,6 +346,14 @@ VPN. Android doesn't let apps change this, so the setup tool's **Privacy setting
 captive_portal_mode` to undo). With it off, Google isn't contacted, but hotel and café Wi-Fi sign-in pages don't pop up
 by themselves: open any `http://` page in a browser to get them. HONOR's Wi-Fi+ runs its own checks, so turn that off
 too.
+
+### Wi-Fi and Bluetooth scanning
+
+Android can look for nearby Wi-Fi networks and Bluetooth devices even while Wi-Fi and Bluetooth are switched off, so
+apps and Google can work out where the device is. Turn both off in Settings > Location, or let the setup tool's
+**Privacy settings** step do it over USB (`adb shell settings put global wifi_scan_always_enabled 0` and
+`adb shell settings put global ble_scan_always_enabled 0`; put `1` to undo). Location still works from GPS and from
+networks you're connected to; it can take a little longer to get a fix indoors.
 
 ### Free and open-source apps worth knowing about
 

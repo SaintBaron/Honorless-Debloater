@@ -36,6 +36,7 @@ class BootReceiver : BroadcastReceiver() {
             else -> return
         }
         if (!Enforcer(context).isOwner()) return   // not set up (or released): do nothing
+        if (trigger == "app-updated") try { Installer(context).noteUpdated() } catch (e: Exception) { }
         Scheduler.ensurePeriodic(context)
         val pending = goAsync()
         Thread {
@@ -206,7 +207,7 @@ class PackageResultReceiver : BroadcastReceiver() {
         if (action == "install" && !ok && !pending) {
             try { Installer(context).installFailed(pkg, status) } catch (e: Exception) { }
         }
-        if (action == "install") {
+        if (action == "install" && !pending) {
             val name = if (pkg == context.packageName) "Honorless Debloater" else pkg
             Notifier.show(context, "Honorless Debloater", if (ok) "Installed $name." else "Couldn't install $name: $msg")
         }

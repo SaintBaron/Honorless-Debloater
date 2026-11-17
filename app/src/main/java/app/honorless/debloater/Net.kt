@@ -74,9 +74,12 @@ class Net(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
     private fun copyCapped(input: InputStream, out: java.io.OutputStream, max: Long) {
         val buf = ByteArray(64 * 1024)
         var total = 0L
+        val deadline = System.nanoTime() + MAX_SECONDS * 1_000_000_000L
         while (true) {
             val n = input.read(buf)
             if (n < 0) break
+            // A server that trickles data can't hold the download (and the install lock) open for ever.
+            if (System.nanoTime() > deadline) throw NetError("the download took too long")
             total += n
             if (total > max) throw NetError("the download is bigger than expected")
             out.write(buf, 0, n)
@@ -87,6 +90,7 @@ class Net(private val open: (URL) -> HttpURLConnection = { it.openConnection() a
         const val MAX_JSON = 2 * 1024 * 1024
         const val MAX_APK = 150L * 1024 * 1024
         private const val MAX_REDIRECTS = 5
+        private const val MAX_SECONDS = 15 * 60L
 
         /** The only hosts the app will ever contact. */
         val ALLOWED_HOSTS = setOf(

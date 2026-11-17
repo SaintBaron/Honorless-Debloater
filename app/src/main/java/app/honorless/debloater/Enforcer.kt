@@ -377,6 +377,8 @@ class Enforcer(context: Context) {
             defaultDialer()?.let { m.putIfAbsent(it, "phone app") }
             defaultSms()?.let { m.putIfAbsent(it, "messaging app") }
         }
+        // With a VPN locked on, nothing gets online without it: hiding it would cut the device off.
+        store.setting(Store.S_VPN, "").takeIf { it.isNotEmpty() }?.let { m.putIfAbsent(it, "always-on VPN") }
         return m
     }
 
@@ -870,8 +872,10 @@ class Enforcer(context: Context) {
     fun release(): String = synchronized(LOCK) {
         if (!isOwner()) return "The debloater isn't device owner."
         var undone = 0
-        // Everything it recorded hiding, plus anything on the list that's hidden, in case a record was lost.
-        val toRestore = store.readSet(Store.MANAGED) + store.readList(Store.BLOCK) + store.readList(Store.REMOVE)
+        // Everything it recorded hiding, anything on the lists, and every other app on the device: only a device
+        // owner can hide apps, and Android keeps them hidden after the owner is gone, so nothing may be left behind.
+        val toRestore = store.readSet(Store.MANAGED) + store.readList(Store.BLOCK) + store.readList(Store.REMOVE) +
+            (try { allApps().keys } catch (e: Exception) { emptySet() })
         for (p in toRestore) {
             if (!hidden(p) && !suspended(p)) continue
             try {
